@@ -17,6 +17,8 @@ window.addEventListener('load', function() {
     })
   );
 
+  var parallaxContext = new L.ParallaxContext(map);
+
   var RADIUS = 100;
   var NPOINTS = 10000;
   var MAXHEIGHT = 50;
@@ -39,7 +41,7 @@ window.addEventListener('load', function() {
   );
 
   map.addLayer(
-    new L.ParallaxPolyline(path, {
+    new L.ParallaxPolyline(path, parallaxContext, {
       color: "red",
       smoothFactor: 0,
     })

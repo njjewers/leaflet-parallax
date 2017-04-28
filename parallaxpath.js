@@ -1,50 +1,135 @@
+"use strict";
 
-L.ParallaxPolyline = L.Polyline.extend({
+L.ParallaxContext = L.Class.extend({
   options: {
     scaleFactor: 5000,
   },
 
-  initialize: function (latlngs, options) {
+  initialize: function(map, options) {
     L.Util.setOptions(this, options);
-    L.Polyline.prototype.initialize.call(this, latlngs, this.options);
 
-    this.PPM_EQUATOR = [];
-    console.log(this.options)
-    this.setScaleFactor(this.options.scaleFactor);
+    // Pre-bind event handlers
+    this._zoomHandler = this._zoomHandler.bind(this);
+    this._moveHandler = this._moveHandler.bind(this);
+
+    // Initialization
+    this._parallaxLayers = {};
+
+    this.setMap(map);
+    this._updatePixelScale();
+    this._updateParallaxLayers();
   },
 
-  onAdd: function (map) {
-    L.Polyline.prototype.onAdd.call(this, map);
-
-    this._moveHandler = this._reset.bind(this);
-
-    this._map.on('move',this._moveHandler);
-    this._map.on('zoom',this._moveHandler);
-  },
-
-  onRemove: function (map) {
-    L.Polyline.prototype.onRemove.call(this, map);
-
-    this._map.off('move',this._moveHandler);
-    this._map.off('zoom',this._moveHandler);
-  },
-
-  // Precompute meter-per-pixel values
-  setScaleFactor: function (sf) {
-    for (var i=0; i<20; i++) {
-      this.PPM_EQUATOR[i] = Math.pow(2, i+8)/6378137/sf;
+  setMap: function(map) {
+    if (this._map) {
+      this._removeMapListeners(this._map);
     }
+
+    if (!map) {
+      throw new TypeError("ParallaxContext initialized without a map");
+    }
+
+    this._map = map;
+
+    map.on('move',this._moveHandler);
+    map.on('zoom',this._zoomHandler);
   },
 
-  // override default projection function to our own ends
-  _projectLatlngs: function (latlngs, result, projectedBounds) {
+  _removeMapListeners: function(map) {
+    map.off('move',this._moveHandler);
+    map.off('zoom',this._zoomHandler);
+  },
+
+  // Setters
+  setScaleFactor: function(scaleFactor) {
+    this.options.scaleFactor = scaleFactor;
+
+    this._updatePixelScale();
+  },
+
+  // Adding/removing layers
+  _addLayer: function(layer) {
+    this._parallaxLayers[L.Util.stamp(layer)] = layer;
+  },
+
+  _removeLayer: function(layer) {
+    delete this._parallaxLayers[L.Util.stamp(layer)];
+  },
+
+  // Other private methods
+  _updatePixelScale: function(scaleFactor) {
+    this.PPM_EQUATOR = Math.pow(2, this._map.getZoom()+8)/6378137/this.options.scaleFactor;
+  },
+
+  _zoomHandler: function() {
+    this._updatePixelScale();
+    this._updateParallaxLayers();
+  },
+
+  _moveHandler: function() {
+    this._updateParallaxLayers();
+  },
+
+  _updateParallaxLayers: function() {
     var mapBounds = this._map.getPixelBounds();
     var origin = this._map.getPixelOrigin();
 
-    var viewX = (mapBounds.min.x + mapBounds.max.x)/2 - origin.x;
-    var viewY = mapBounds.max.y - origin.y;
+    this.viewX = (mapBounds.min.x + mapBounds.max.x)/2 - origin.x;
+    this.viewY = mapBounds.max.y - origin.y;
 
-    var zoom = this._map.getZoom();
+    for (var i in this._parallaxLayers) {
+      this._parallaxLayers[i]._reset();
+    }
+  },
+
+  projectLatLng: function(latlng) {
+    var point = this._map.latLngToLayerPoint(latlng);
+    var altmod = latlng.alt * this.PPM_EQUATOR / Math.cos(latlng.lat * Math.PI/180);
+
+    point.x += (point.x - this.viewX) * altmod;
+    point.y += (point.y - this.viewY) * altmod;
+
+    return point;
+  },
+});
+
+var HasParallaxContextMixin = {
+  setParallaxContext: function(parallaxContext) {
+    if (this._parallaxContext) {
+      this._parallaxContext._removeLayer(this);
+    }
+
+    this._parallaxContext = parallaxContext;
+    this._parallaxContext._addLayer(this);
+  },
+};
+
+L.ParallaxPolyline = L.Polyline.extend({
+  includes: HasParallaxContextMixin,
+
+  initialize: function (latlngs, parallaxContext, options) {
+    L.Util.setOptions(this, options);
+
+    this.setParallaxContext(parallaxContext);
+
+    L.Polyline.prototype.initialize.call(this, latlngs, this.options);
+  },
+
+  onAdd: function(map) {
+    L.Polyline.prototype.onAdd.call(this, map);
+
+    this._parallaxContext._addLayer(this);
+  },
+
+  onRemove: function(map) {
+    L.Polyline.prototype.onRemove.call(this, map);
+
+    this._parallaxContext._removeLayer(this);
+  },
+
+  
+  // override default projection function to our own ends
+  _projectLatlngs: function (latlngs, result, projectedBounds) {
 
     var flat = latlngs[0] instanceof L.LatLng,
         len = latlngs.length,
@@ -53,13 +138,7 @@ L.ParallaxPolyline = L.Polyline.extend({
     if (flat) {
       ring = [];
       for (i = 0; i < len; i++) {
-        var latlng = latlngs[i];
-        var point = ring[i] = this._map.latLngToLayerPoint(latlng);
-
-        var altmod = latlng.alt * this.PPM_EQUATOR[zoom] / Math.cos(latlng.lat * Math.PI/180);
-
-        point.x += (point.x - viewX) * altmod;
-        point.y += (point.y - viewY) * altmod;
+        var point = ring[i] = this._parallaxContext.projectLatLng(latlngs[i]);
 
         projectedBounds.extend(point);
       }
